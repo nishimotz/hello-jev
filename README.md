@@ -94,6 +94,22 @@ Vercel 経由では `probability` と `noul` の両方、および補った `con
 uv run --with requests python examples/task2_basic.py
 ```
 
+## 汎用 LLM と比べる
+
+同じ判断を ollama 上の汎用 LLM にやらせて、Jev と並べる。
+API キーは不要で、ネットワークも使わない（モデルがローカルにある場合）。
+
+```bash
+python3 examples/task5_llm_baseline.py     # LLM に確率を出させる
+python3 examples/task6_criteria_matters.py # criteria の書き方で値が変わる
+```
+
+既定のモデルは `gemma4:12b`。`OLLAMA_MODEL` で変えられる。
+思考モデルは既定で思考を切る（`OLLAMA_THINK=1` で有効）。
+
+実測した内容と限界は `docs/06-llm-baseline.md` にある。
+**1環境の観測であり、一般則ではない。**
+
 ## 構成
 
 ```
@@ -104,6 +120,8 @@ examples/
   task2_basic.py      noul で単一の判断
   task3_pipeline.py   choice で分類し、確信度で分岐
   task4_sequential.py 時系列。文脈を state に入れる
+  task5_llm_baseline.py     同じ判断を ollama の LLM にやらせる
+  task6_criteria_matters.py criteria の書き方で値が変わることを見る
 tests/
   test_tasks_offline.py  ネットワーク不要のロジック検証
 docs/
@@ -112,6 +130,7 @@ docs/
   03-pipeline.md
   04-sequential.md
   05-verification.md
+  06-llm-baseline.md
 ```
 
 ## 確認

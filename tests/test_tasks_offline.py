@@ -10,6 +10,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples"))
 
 import common  # noqa: E402
 from task3_pipeline import route  # noqa: E402
+from task5_llm_baseline import THINK, LlmError  # noqa: E402
+from task5_llm_baseline import evaluate_noul as llm_evaluate_noul  # noqa: E402
+
+
+def test_think_is_off_by_default() -> None:
+    """思考は既定で切る。判断だけを取るのに思考は不要で、10倍以上速い。"""
+    assert THINK is False
+
+
+def test_llm_raises_when_ollama_is_unreachable() -> None:
+    """ollama が落ちていれば LlmError になる。例外を握りつぶさない。"""
+    import task5_llm_baseline as t5
+
+    original = t5.OLLAMA_URL
+    try:
+        # 誰も listen していないポートへ向ける
+        t5.OLLAMA_URL = "http://127.0.0.1:1/api/chat"
+        try:
+            llm_evaluate_noul("test")
+        except LlmError:
+            pass  # 期待どおり
+        else:
+            raise AssertionError("LlmError が送出されなかった")
+    finally:
+        t5.OLLAMA_URL = original
 
 
 def test_backend_prefers_typesafe_when_key_present(monkeypatch) -> None:
