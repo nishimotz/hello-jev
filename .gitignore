@@ -1,3 +1,11 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# 認証情報。実値はリポジトリ外（~/.config/hello-jev/env）に置く方針だが、
+# 誤って作ってしまった場合の保険として除外しておく。
+.env
+.env.local
+
+# direnv のキャッシュ
+.direnv/

@@ -2,7 +2,7 @@
 
 問い合わせが「緊急か」を yes の確率で返させる。
 実行するには環境変数 CLOUDFLARE_ACCOUNT_ID と
-CLOUDFLARE_API_TOKEN が必要。
+CLOUDFLARE_API_TOKEN が必要（リポジトリ直下の .envrc で direnv が入れる）。
 """
 
 from common import evaluate
