@@ -1,1 +1,13 @@
+# Jev を呼ぶために使う（examples/common.py）。
+# task5 / task6（ollama との比較）は標準ライブラリだけで動くので不要。
+#
+# uv を使う場合はこのファイルを使わず、 --with requests でその場で入れる。
+#   uv run --with requests python examples/task2_basic.py
+#
+# uv を使わない場合:
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# テストも common.py を import するため requests が要る。pytest は別途入れる。
+
 requests==2.32.3

@@ -16,6 +16,37 @@
 - 入力はテキストのみ（画像は不可）
 - 会話履歴を持たない。文脈はコードが `state` に入れる
 
+## 依存関係
+
+Jev の呼び出し（`examples/common.py`）は `requests` を使う。
+
+| タスク | 必要なもの |
+|---|---|
+| `task2` 〜 `task4`（Jev） | `requests` |
+| `task5` / `task6`（ollama） | 標準ライブラリのみ。`requests` 不要 |
+| テスト | `pytest` と `requests`（`common.py` を import するため） |
+
+**uv を使う場合**は、その場で入れて実行できる。仮想環境は不要。
+
+```bash
+uv run --with requests python examples/task2_basic.py
+uv run --with pytest --with requests pytest tests/ -q
+```
+
+**uv を使わない場合**は `requirements.txt` から入れる。
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python examples/task2_basic.py
+pytest tests/ -q
+```
+
+`task5` / `task6` は `requests` を使わないので、どちらの方法でもよく、
+素の `python3` でも動く。
+
 ## セットアップ
 
 Jev の呼び出し経路は 3 つ。上から順に優先される。
