@@ -1,13 +1,16 @@
 # Jev を呼ぶために使う（examples/common.py）。
 # task5 / task6（ollama との比較）は標準ライブラリだけで動くので不要。
+# task7〜task9（Apple FM）は apple-fm-sdk を使う。pip で別途入れる。
 #
-# uv を使う場合はこのファイルを使わず、 --with requests でその場で入れる。
+# uv を使う場合はこのファイルを使わず、 --with でその場で入れる。
 #   uv run --with requests python examples/task2_basic.py
+#   uv run --with apple-fm-sdk python examples/task7_apple_fm_structured.py
 #
 # uv を使わない場合:
 #   python3 -m venv .venv && source .venv/bin/activate
 #   pip install -r requirements.txt
 #
-# テストも common.py を import するため requests が要る。pytest は別途入れる。
+# テストは common.py を import するが requests が無くても動く
+# （無い場合は JevError になる）。pytest は別途入れる。
 
 requests==2.32.3

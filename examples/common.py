@@ -19,9 +19,16 @@ Vercel と Cloudflare は `noul` / `confidence` の位置が異なるので、
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import requests
+try:
+    import requests
+except ImportError:  # Jev を呼ばない教材（task7〜9）でも import できるようにする
+    requests = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    # 型注釈のためだけに読む。実行時は requests が None でもよい。
+    from requests import Response
 
 # Cloudflare Workers AI 経由（Third-party モデル。AI Gateway のクレジットが要る）
 _CF_ENDPOINT = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run"
@@ -200,15 +207,21 @@ def _call_cloudflare(
 
 def _post(
     url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float
-) -> requests.Response:
+) -> Response:
     """POST する。接続失敗は JevError に包む。"""
+    if requests is None:
+        raise JevError(
+            "requests が入っていない。Jev を呼ぶには "
+            "`uv run --with requests python examples/task2_basic.py` のように "
+            "requests を入れて実行する（pip なら requirements.txt から）。"
+        )
     try:
         return requests.post(url, headers=headers, json=payload, timeout=timeout)
     except requests.RequestException as e:
         raise JevError(f"接続失敗: {e}") from e
 
 
-def _parse_answers(response: requests.Response) -> dict[str, Any]:
+def _parse_answers(response: Response) -> dict[str, Any]:
     """レスポンスを JSON として読み、answers を取り出す。"""
     try:
         body = response.json()
@@ -217,7 +230,7 @@ def _parse_answers(response: requests.Response) -> dict[str, Any]:
     return _extract_answers(body)
 
 
-def _parse_vercel_answers(response: requests.Response) -> dict[str, Any]:
+def _parse_vercel_answers(response: Response) -> dict[str, Any]:
     """Vercel のレスポンスを読み、他の経路と同じ形に正規化する。
 
     Vercel は `probability` と `confidence` の位置が違う。
@@ -310,7 +323,7 @@ _VC_ERROR_HINTS = {
 
 
 def _format_http_error(
-    response: requests.Response, hints: dict[int, str]
+    response: Response, hints: dict[int, str]
 ) -> str:
     """HTTP エラーを、次に何をすればよいか分かる文字列にする。"""
     body = response.text[:500]

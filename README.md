@@ -24,13 +24,15 @@ Jev の呼び出し（`examples/common.py`）は `requests` を使う。
 |---|---|
 | `task2` 〜 `task4`（Jev） | `requests` |
 | `task5` / `task6`（ollama） | 標準ライブラリのみ。`requests` 不要 |
-| テスト | `pytest` と `requests`（`common.py` を import するため） |
+| `task7` 〜 `task9`（Apple FM） | `apple-fm-sdk` と macOS 27 以降。`requests` 不要 |
+| テスト | `pytest` のみ。`requests` も SDK も無くてよい |
 
 **uv を使う場合**は、その場で入れて実行できる。仮想環境は不要。
 
 ```bash
 uv run --with requests python examples/task2_basic.py
-uv run --with pytest --with requests pytest tests/ -q
+uv run --with apple-fm-sdk python examples/task7_apple_fm_structured.py
+uv run --with pytest pytest tests/ -q
 ```
 
 **uv を使わない場合**は `requirements.txt` から入れる。
@@ -46,6 +48,18 @@ pytest tests/ -q
 
 `task5` / `task6` は `requests` を使わないので、どちらの方法でもよく、
 素の `python3` でも動く。
+
+`task7` 〜 `task9` は macOS 27 以降で、Apple Intelligence が有効な必要がある。
+モデルは OS に付いてくるので、API キーも課金も要らない。
+
+**SDK のパッケージ情報は「macOS 26.0+」と書いているが、実際に要るのは 27。**
+SDK 自身のコードが `macOS 27 SDK` に言及しており、`libFoundationModels.dylib`
+も macOS 27 SDK でビルドされている。26 では動かない前提で扱う（`docs/07`）。
+
+```bash
+pip install apple-fm-sdk          # uv なら --with apple-fm-sdk で足りる
+uv run --with apple-fm-sdk python examples/task7_apple_fm_structured.py
+```
 
 ## セットアップ
 
@@ -127,19 +141,37 @@ uv run --with requests python examples/task2_basic.py
 
 ## 汎用 LLM と比べる
 
-同じ判断を ollama 上の汎用 LLM にやらせて、Jev と並べる。
-API キーは不要で、ネットワークも使わない（モデルがローカルにある場合）。
+同じ判断を、汎用 LLM（ollama）と Apple のオンデバイスモデルの両方にやらせて、
+Jev と並べる。API キーは不要で、ネットワークも使わない。
 
 ```bash
+# ollama 上の汎用 LLM
 python3 examples/task5_llm_baseline.py     # LLM に確率を出させる
 python3 examples/task6_criteria_matters.py # criteria の書き方で値が変わる
+
+# Apple Intelligence のオンデバイスモデル（macOS 27 以降）
+uv run --with apple-fm-sdk python examples/task7_apple_fm_structured.py
+uv run --with apple-fm-sdk python examples/task8_fm_criteria.py
+uv run --with apple-fm-sdk python examples/task9_fm_independence.py
 ```
 
-既定のモデルは `gemma4:12b`。`OLLAMA_MODEL` で変えられる。
+ollama の既定のモデルは `gemma4:12b`。`OLLAMA_MODEL` で変えられる。
 思考モデルは既定で思考を切る（`OLLAMA_THINK=1` で有効）。
 
-実測した内容と限界は `docs/06-llm-baseline.md` にある。
-**1環境の観測であり、一般則ではない。**
+**Apple のモデルは構造化出力を持つ。** `@fm.generable` と `fm.guide()` で
+スキーマを定義すると、Jev の `noul` / `choice` / `score` をそのまま写像できる。
+`task7` は task2〜4 の `questions` を書き換えずに渡す。
+
+`FM_REPEAT` で繰り返し回数を変えられる。**値を 1 回だけ見ると気づけない**ので、
+増やして確かめること。
+
+実測した内容と限界は `docs/06-llm-baseline.md` と `docs/07-apple-fm.md` にある。
+**どちらも1環境の観測であり、一般則ではない。**
+
+要点だけ挙げると、構造化出力が保証するのは**形**であって**確信度**ではない。
+Apple のモデルが返す 0〜1 の値は、同じ入力でも 0.00 から 1.00 まで動いた。
+判断が要るなら、確率ではなく判断そのものを聞く方が安定する（`task8`）。
+それでも判断は独立せず、順序や会話履歴で動く（`task9`）。
 
 ## 構成
 
@@ -148,11 +180,15 @@ python3 examples/task6_criteria_matters.py # criteria の書き方で値が変�
 env.example           認証情報のテンプレート。実値は入れない
 examples/
   common.py           Jev を呼ぶ薄いクライアント（3経路を吸収）
+  questions.py        questions をプロンプトに組み替える（標準ライブラリのみ）
   task2_basic.py      noul で単一の判断
   task3_pipeline.py   choice で分類し、確信度で分岐
   task4_sequential.py 時系列。文脈を state に入れる
   task5_llm_baseline.py     同じ判断を ollama の LLM にやらせる
   task6_criteria_matters.py criteria の書き方で値が変わることを見る
+  task7_apple_fm_structured.py  Jev の型を構造化出力に写像する
+  task8_fm_criteria.py          criteria と、確率か判断かの違い
+  task9_fm_independence.py      判断が独立しているかを確かめる
 tests/
   test_tasks_offline.py  ネットワーク不要のロジック検証
 docs/
@@ -162,12 +198,13 @@ docs/
   04-sequential.md
   05-verification.md
   06-llm-baseline.md
+  07-apple-fm.md
 ```
 
 ## 確認
 
 ```bash
-uv run --with pytest --with requests pytest tests/ -q
+uv run --with pytest pytest tests/ -q
 ```
 
 ## 注意
