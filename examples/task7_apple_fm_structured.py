@@ -19,9 +19,10 @@ Apple のモデルは文章を生成するモデルなので、Jev の型（noul
     macOS 27 以降（Apple Intelligence が有効）
     pip install apple-fm-sdk  （uv なら --with apple-fm-sdk）
 
-    SDK のパッケージ情報は「macOS 26.0+」と書いているが、実際に要るのは
-    macOS 27。SDK 自身が `macOS 27 SDK` に言及しており、dylib も
-    macOS 27 SDK でビルドされている。26 では動かない前提で扱う（docs/07）。
+    SDK のメタデータは「macOS 26.0+」と書いているが、同梱の dylib は
+    26 では動かない。dylib が要求する FoundationModels のシンボルのうち
+    7 個が macOS 26 SDK に無い（27 SDK には全部ある）。この教材が使う
+    GenerationOptions の初期化子もその 1 つ。詳しくは docs/07。
 
 環境変数:
     FM_REPEAT   同じ条件を繰り返す回数（既定 5）
