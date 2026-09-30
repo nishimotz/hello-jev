@@ -1,11 +1,13 @@
 """Jev (TypeSafe System One Model) を呼ぶ薄いクライアント。
 
-経路は 4 つ。上から順に優先する。
+経路は 5 つ。上から順に優先する。
 
 1. `TYPESAFE_API_KEY`    TypeSafe 直 API。Cloudflare / Vercel を挟まない
 2. `AI_GATEWAY_API_KEY`  Vercel AI Gateway の `typesafe-ai/jev`
 3. `CLOUDFLARE_*`        Cloudflare Workers AI の `typesafe/jev`
 4. `OPENAI_API_KEY`      OpenAI Responses API（汎用 LLM。Jev ではない）
+5. `OLLAMA_HOST`         Ollama の `/v1/systemone`（ローカル。鍵不要）。
+                         既定の経路。`nimble` は Jev ではない
 
 Vercel / Cloudflare / OpenAI は `noul` / `confidence` の位置が異なるので、
 このモジュールで同じ形に正規化してから返す。
@@ -15,8 +17,10 @@ Vercel / Cloudflare / OpenAI は `noul` / `confidence` の位置が異なるの�
     AI_GATEWAY_API_KEY        Vercel AI Gateway 経由（クレジットが必要）
     CLOUDFLARE_ACCOUNT_ID     Cloudflare 経由のとき必要
     CLOUDFLARE_API_TOKEN      Cloudflare 経由のとき必要
-    OPENAI_API_KEY            OpenAI 経由のとき必要（最後の経路）
+    OPENAI_API_KEY            OpenAI 経由のとき必要
     OPENAI_MODEL              OpenAI のモデル名（既定 gpt-6-luna）
+    OLLAMA_HOST               Ollama の URL（既定 http://localhost:11434）
+    OLLAMA_MODEL              Ollama のモデル名（既定 nimble）
 
 経路の優先順は、Jev 本命（TypeSafe / Vercel / Cloudflare）を OpenAI より
 先に置く。OPENAI_API_KEY は最後に判定するので、両方設定しても Jev が勝つ。
@@ -70,6 +74,16 @@ _ENV_VC_API_KEY = "AI_GATEWAY_" + "API_KEY"
 _ENV_OPENAI_API_KEY = "OPENAI_" + "API_KEY"
 _ENV_OPENAI_MODEL = "OPENAI_" + "MODEL"
 
+# Ollama の /v1/systemone（System One モデル）。ローカルなので鍵は要らない。
+# 出典: https://docs.ollama.com/api/systemone
+#   - POST /v1/systemone、ボディは {model, state, questions}
+#   - 出力は直下の answers。他の Jev 経路と同じ形（確率・confidence 付き）
+#   - ストリーミング・画像・ツール・生成パラメータは非対応
+_OLLAMA_HOST = "http://localhost:11434"
+_OLLAMA_MODEL = "nimble"
+_ENV_OLLAMA_HOST = "OLLAMA_" + "HOST"
+_ENV_OLLAMA_MODEL = "OLLAMA_" + "MODEL"
+
 
 class JevError(RuntimeError):
     """Jev 呼び出しの失敗。握りつぶさず呼び出し側に渡す。"""
@@ -110,6 +124,8 @@ def evaluate(
         return _call_vercel(state, questions, model or _VC_MODEL, timeout)
     if backend == "openai":
         return _call_openai(state, questions, model or _openai_model(), timeout)
+    if backend == "ollama":
+        return _call_ollama(state, questions, model or _ollama_model(), timeout)
     return _call_cloudflare(state, questions, model or _CF_MODEL, timeout)
 
 
@@ -117,8 +133,9 @@ def _select_backend() -> str:
     """どの経路で呼ぶかを決める。
 
     優先順は TYPESAFE_API_KEY、AI_GATEWAY_API_KEY、CLOUDFLARE_*、
-    OPENAI_API_KEY の順。OPENAI_API_KEY は最後なので、Jev 本命の
-    キーが設定されていれば OpenAI より Jev が選ばれる。
+    OPENAI_API_KEY の順。キーが 1 つも無ければローカルの Ollama
+    （/v1/systemone、鍵不要）を既定にする。Jev 本命のキーが設定されて
+    いれば、OpenAI よりも Ollama よりも Jev が選ばれる。
     """
     if os.environ.get(_ENV_TS_API_KEY, "").strip():
         return "typesafe"
@@ -131,12 +148,42 @@ def _select_backend() -> str:
         return "cloudflare"
     if os.environ.get(_ENV_OPENAI_API_KEY, "").strip():
         return "openai"
-    return "cloudflare"
+    # 最後はローカルの Ollama（/v1/systemone）。鍵不要なので既定になる。
+    return "ollama"
 
 
 def _openai_model() -> str:
     """OpenAI のモデル名を決める。OPENAI_MODEL で差し替えられる。"""
     return os.environ.get(_ENV_OPENAI_MODEL, "").strip() or _OPENAI_MODEL
+
+
+def _ollama_host() -> str:
+    """Ollama の URL を決める。OLLAMA_HOST で差し替えられる。"""
+    return os.environ.get(_ENV_OLLAMA_HOST, "").strip() or _OLLAMA_HOST
+
+
+def _ollama_model() -> str:
+    """Ollama のモデル名を決める。OLLAMA_MODEL で差し替えられる。"""
+    return os.environ.get(_ENV_OLLAMA_MODEL, "").strip() or _OLLAMA_MODEL
+
+
+def _call_ollama(
+    state: Any, questions: dict[str, dict[str, Any]], model: str, timeout: float
+) -> dict[str, Any]:
+    """Ollama の /v1/systemone を叩く。
+
+    System One は TypeSafe 直 API と同じ `{model, state, questions}` を受け、
+    同じ位置（直下の answers）に同じ形で返す。他経路のような正規化は要らない
+    （`_extract_answers` がそのまま読める）。
+
+    鍵は要らない。既定の接続先はローカルの Ollama。
+    """
+    url = _ollama_host().rstrip("/") + "/v1/systemone"
+    payload = {"model": model, "state": state, "questions": questions}
+    response = _post(url, {"Content-Type": "application/json"}, payload, timeout)
+    if response.status_code != 200:
+        raise JevError(_format_http_error(response, _OLLAMA_ERROR_HINTS))
+    return _parse_answers(response)
 
 
 def _call_openai(
@@ -532,6 +579,17 @@ _OPENAI_ERROR_HINTS = {
         "レート制限または残高不足。少し待って再試行するか、"
         "OpenAI の使用量・残高を確認する。"
     ),
+}
+
+_OLLAMA_ERROR_HINTS = {
+    404: (
+        "エンドポイントまたはモデルが無い。Ollama v0.35.0 以降か、"
+        "`ollama pull nimble` 済みかを確認する。"
+    ),
+    405: "メソッドが合わない。/v1/systemone への POST か確認する。",
+    413: "リクエストが大きすぎる（上限 64 KiB）。state を分割する。",
+    422: "リクエストが不正。questions の type / instructions / criteria を見直す。",
+    429: "レート制限。少し待ってから再試行する。",
 }
 
 _TS_ERROR_HINTS = {

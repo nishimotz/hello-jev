@@ -25,6 +25,7 @@ Jev の呼び出し（`examples/common.py`）は `requests` を使う。
 | `task2` 〜 `task4`（Jev） | `requests` |
 | `task5` / `task6`（ollama） | 標準ライブラリのみ。`requests` 不要 |
 | `task7` 〜 `task9`（Apple FM） | `apple-fm-sdk` と macOS 27 以降。`requests` 不要 |
+| `task11`（Ollama /v1/systemone） | Ollama v0.35.0 以降と `ollama pull nimble`。`requests` が必要。鍵は不要 |
 | テスト | `pytest` のみ。`requests` も SDK も無くてよい |
 
 **uv を使う場合**は、その場で入れて実行できる。仮想環境は不要。
@@ -66,14 +67,15 @@ uv run --with apple-fm-sdk python examples/task7_apple_fm_structured.py
 
 ## セットアップ
 
-Jev の呼び出し経路は 3 つ。上から順に優先される。
+Jev の呼び出し経路は 5 つ。上から順に優先される。
 
 | 経路 | 必要なもの | 課金 |
 |---|---|---|
 | **TypeSafe 直 API** | `TYPESAFE_API_KEY` | Cloudflare / Vercel を挟まない |
 | **Vercel AI Gateway** | `AI_GATEWAY_API_KEY` | クレジット制（月の無料枠あり。カード登録が前提） |
 | Cloudflare Workers AI | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | Third-party モデルのため無料枠外。402 で止まる |
-| OpenAI（比較用） | `OPENAI_API_KEY` | Jev ではない。最後に判定（`OPENAI_MODEL`、既定 `gpt-6-luna`） |
+| OpenAI（比較用） | `OPENAI_API_KEY` | Jev ではない（`OPENAI_MODEL`、既定 `gpt-6-luna`） |
+| Ollama（比較用） | 不要（ローカル） | Jev ではない。`/v1/systemone`、既定の経路（`OLLAMA_MODEL`、既定 `nimble`） |
 
 **Vercel が実用的な選択肢。** キーは AI Gateway の API Keys ページで発行する。
 Jev は無料枠モデルの一覧に含まれている。
@@ -126,14 +128,15 @@ paid tier に上げると制限が外れる。
 
 `common.py` が違いを吸収するので、教材のコードは経路を意識しなくてよい。
 
-| | Vercel | Cloudflare | TypeSafe 直 |
-|---|---|---|---|
-| モデル名 | `typesafe-ai/jev` | `typesafe/jev` | `jev-latest` |
-| モデルの渡し方 | ヘッダ `ai-model-id` | ボディ | ボディ |
-| ボディ | `{state, questions}` | `{model, input:{...}}` | `{model, state, questions}` |
-| boolean の型名 | `boolean` | `noul` | `noul` |
-| boolean の答え | `probability` | `noul` | `noul` |
-| confidence の位置 | `providerMetadata.typesafe` | answer 内 | answer 内 |
+| | Vercel | Cloudflare | TypeSafe 直 | Ollama |
+|---|---|---|---|---|
+| モデル名 | `typesafe-ai/jev` | `typesafe/jev` | `jev-latest` | `nimble` |
+| モデルの渡し方 | ヘッダ `ai-model-id` | ボディ | ボディ | ボディ |
+| ボディ | `{state, questions}` | `{model, input:{...}}` | `{model, state, questions}` | `{model, state, questions}` |
+| boolean の型名 | `boolean` | `noul` | `noul` | `noul` |
+| boolean の答え | `probability` | `noul` | `noul` | `noul` |
+| confidence の位置 | `providerMetadata.typesafe` | answer 内 | answer 内 | answer 内 |
+| エンドポイント | `/v4/ai/evaluation-model` | `/ai/run` | `/v1/systemone` | `/v1/systemone` |
 
 Vercel 経由では `probability` と `noul` の両方、および補った `confidence` が返る。
 
@@ -183,7 +186,7 @@ Apple のモデルが返す 0〜1 の値は、同じ入力でも 0.00 から 1.0
 .envrc                direnv で認証情報を読み込む（秘密は書かない）
 env.example           認証情報のテンプレート。実値は入れない
 examples/
-  common.py           Jev を呼ぶ薄いクライアント（3経路を吸収）
+  common.py           Jev を呼ぶ薄いクライアント（5経路を吸収）
   questions.py        questions をプロンプトに組み替える（標準ライブラリのみ）
   task2_basic.py      noul で単一の判断
   task3_pipeline.py   choice で分類し、確信度で分岐
@@ -194,6 +197,7 @@ examples/
   task8_fm_criteria.py          criteria と、確率か判断かの違い
   task9_fm_independence.py      判断が独立しているかを確かめる
   task10_openai_backend.py      同じ判断を OpenAI 経路にやらせる（比較用）
+  task11_ollama_backend.py      同じ判断を Ollama の /v1/systemone にやらせる（比較用）
 tests/
   test_tasks_offline.py  ネットワーク不要のロジック検証
 docs/
@@ -205,6 +209,7 @@ docs/
   06-llm-baseline.md
   07-apple-fm.md
   08-openai-backend.md
+  09-ollama-backend.md
 ```
 
 ## 確認

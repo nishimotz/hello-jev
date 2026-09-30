@@ -74,14 +74,14 @@ def test_backend_uses_vercel_when_only_gateway_key(monkeypatch) -> None:
     assert common._select_backend() == "vercel"
 
 
-def test_backend_falls_back_to_cloudflare(monkeypatch) -> None:
-    """Jev のキーが無ければ Cloudflare 経由。"""
+def test_backend_falls_back_to_ollama_when_nothing_set(monkeypatch) -> None:
+    """どんなキーも無ければ Cloudflare ではなく Ollama（鍵不要の既定）。"""
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
-    assert common._select_backend() == "cloudflare"
+    assert common._select_backend() == "ollama"
 
 
 def test_backend_uses_openai_when_only_openai_key(monkeypatch) -> None:
@@ -111,7 +111,7 @@ def test_blank_key_is_treated_as_absent(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "   ")
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
-    assert common._select_backend() == "cloudflare"
+    assert common._select_backend() == "ollama"
 
 
 def test_openai_model_is_overridable(monkeypatch) -> None:
@@ -453,3 +453,120 @@ def test_unknown_question_type_is_rejected() -> None:
 
     with pytest.raises(FmError):
         t7.build_generable({"x": {"type": "mystery"}})
+
+
+# --- task11（Ollama /v1/systemone 経路） --------------------------------
+
+
+def test_backend_uses_ollama_when_no_keys(monkeypatch) -> None:
+    """鍵が 1 つも無ければローカルの Ollama が既定になる。"""
+    for name in (
+        "TYPESAFE_API_KEY",
+        "AI_GATEWAY_API_KEY",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_TOKEN",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert common._select_backend() == "ollama"
+
+
+def test_backend_prefers_openai_over_ollama(monkeypatch) -> None:
+    """汎用 LLM の中では OpenAI が Ollama より先。Ollama は鍵不要の既定。"""
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+    assert common._select_backend() == "openai"
+
+
+def test_ollama_defaults_and_overrides(monkeypatch) -> None:
+    """OLLAMA_HOST / OLLAMA_MODEL で差し替えられる。既定は localhost と nimble。"""
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    assert common._ollama_host() == "http://localhost:11434"
+    assert common._ollama_model() == "nimble"
+    monkeypatch.setenv("OLLAMA_HOST", "http://192.168.1.10:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "nimble:latest")
+    assert common._ollama_host() == "http://192.168.1.10:11434"
+    assert common._ollama_model() == "nimble:latest"
+
+
+def test_ollama_call_posts_jev_shaped_payload(monkeypatch) -> None:
+    """Ollama 経路は /v1/systemone に {model, state, questions} を投げる。
+
+    出力は直下の answers（他経路と同じ形）なので、そのまま読める。
+    """
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+
+    captured: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "model": "nimble",
+                "answers": {
+                    "is_urgent": {
+                        "type": "noul",
+                        "noul": 0.93,
+                        "confidence": 0.88,
+                    }
+                },
+                "usage": {"input_tokens": 174, "output_tokens": 1},
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["payload"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        common, "requests", type("R", (), {"post": staticmethod(fake_post)})
+    )
+
+    questions = {"is_urgent": {"type": "noul", "instructions": "urgent?"}}
+    answers = common.evaluate("test", questions)
+
+    # ローカルの System One エンドポイントを叩く
+    assert captured["url"] == "http://localhost:11434/v1/systemone"
+    # 鍵は付けない（ローカル）
+    assert "Authorization" not in captured["headers"]
+    # TypeSafe 直 API と同じ {model, state, questions}
+    assert captured["payload"]["model"] == "nimble"
+    assert captured["payload"]["state"] == "test"
+    assert captured["payload"]["questions"] == questions
+    # answers をそのまま読める
+    assert answers["is_urgent"]["noul"] == 0.93
+    assert answers["is_urgent"]["confidence"] == 0.88
+
+
+def test_ollama_answers_feed_the_same_router() -> None:
+    """Ollama の answers は task3 の route() にそのまま渡せる。"""
+    body = {
+        "answers": {
+            "department": {
+                "type": "choice",
+                "choice": "technical",
+                "confidence": 0.91,
+            }
+        }
+    }
+
+    class FakeResponse:
+        def json(self):
+            return body
+
+    answers = common._parse_answers(FakeResponse())
+    result = route(answers)
+    assert result["choice"] == "technical"
+    assert result["action"] == "auto"
