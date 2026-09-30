@@ -75,17 +75,210 @@ def test_backend_uses_vercel_when_only_gateway_key(monkeypatch) -> None:
 
 
 def test_backend_falls_back_to_cloudflare(monkeypatch) -> None:
-    """どちらのキーも無ければ Cloudflare 経由。"""
+    """Jev のキーが無ければ Cloudflare 経由。"""
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
     assert common._select_backend() == "cloudflare"
+
+
+def test_backend_uses_openai_when_only_openai_key(monkeypatch) -> None:
+    """OPENAI_API_KEY だけなら OpenAI 経由。"""
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+    assert common._select_backend() == "openai"
+
+
+def test_backend_prefers_jev_over_openai(monkeypatch) -> None:
+    """Jev 本命のキーがあれば、OPENAI_API_KEY より先に選ばれる。"""
+    monkeypatch.setenv("TYPESAFE_API_KEY", "dummy")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+    assert common._select_backend() == "typesafe"
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "dummy")
+    assert common._select_backend() == "vercel"
 
 
 def test_blank_key_is_treated_as_absent(monkeypatch) -> None:
     """空文字や空白だけの値は未設定と同じ扱いにする。"""
     monkeypatch.setenv("TYPESAFE_API_KEY", "   ")
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "   ")
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
     assert common._select_backend() == "cloudflare"
+
+
+def test_openai_model_is_overridable(monkeypatch) -> None:
+    """OPENAI_MODEL でモデル名を差し替えられる。既定は gpt-6-luna。"""
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    assert common._openai_model() == "gpt-6-luna"
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6-luna-2026-01-01")
+    assert common._openai_model() == "gpt-6-luna-2026-01-01"
+
+
+def test_openai_schema_shapes_each_question_type() -> None:
+    """構造化出力の schema が型ごとに答えの形を変える。"""
+    questions = {
+        "is_urgent": {"type": "noul", "instructions": "urgent?"},
+        "department": {
+            "type": "choice",
+            "instructions": "which?",
+            "criteria": {"billing": "請求", "other": "その他"},
+        },
+        "severity": {
+            "type": "score",
+            "instructions": "how bad?",
+            "criteria": ["a", "b", "c"],
+        },
+    }
+    schema = common._openai_schema(questions)
+    props = schema["properties"]
+    # noul は数値
+    assert props["is_urgent"]["properties"]["answer"]["type"] == "number"
+    # choice は enum で縛る
+    assert props["department"]["properties"]["answer"]["enum"] == ["billing", "other"]
+    # score は 0〜最大レベル（3 レベルなら 2）
+    severity = props["severity"]["properties"]["answer"]
+    assert severity["minimum"] == 0 and severity["maximum"] == 2
+    # confidence は全問に付く
+    assert props["is_urgent"]["required"] == ["answer", "confidence"]
+    assert set(schema["required"]) == {"is_urgent", "department", "severity"}
+
+
+def test_openai_unknown_type_is_rejected() -> None:
+    """未知の型は黙って通さない。"""
+    with pytest.raises(common.JevError):
+        common._openai_schema({"x": {"type": "mystery"}})
+
+
+def test_parse_openai_answers_normalizes_to_jev_shape() -> None:
+    """Responses API の出力を Jev と同じ形に正規化する。"""
+    import json
+
+    questions = {
+        "is_urgent": {"type": "noul"},
+        "department": {"type": "choice"},
+        "severity": {"type": "score"},
+    }
+    model_output = {
+        "is_urgent": {"answer": 1, "confidence": 0.9},
+        "department": {"answer": "billing", "confidence": 0.8},
+        "severity": {"answer": 2, "confidence": 0.7},
+    }
+    body = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": json.dumps(model_output)}
+                ],
+            }
+        ]
+    }
+
+    class FakeResponse:
+        def json(self):
+            return body
+
+    answers = common._parse_openai_answers(FakeResponse(), questions)
+    # int で返っても float に矯正する
+    assert answers["is_urgent"] == {"type": "noul", "noul": 1.0, "confidence": 0.9}
+    assert answers["department"] == {"type": "choice", "choice": "billing", "confidence": 0.8}
+    assert answers["severity"] == {"type": "score", "score": 2.0, "confidence": 0.7}
+
+
+def test_openai_answers_feed_the_same_router() -> None:
+    """同じ形なので task3 の route() にそのまま渡せる。"""
+    import json
+
+    questions = {"department": {"type": "choice"}}
+    body = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(
+                            {"department": {"answer": "billing", "confidence": 0.95}}
+                        ),
+                    }
+                ],
+            }
+        ]
+    }
+
+    class FakeResponse:
+        def json(self):
+            return body
+
+    answers = common._parse_openai_answers(FakeResponse(), questions)
+    result = route(answers)
+    assert result["choice"] == "billing"
+    assert result["action"] == "auto"
+
+
+def test_openai_call_parses_with_monkeypatched_post(monkeypatch) -> None:
+    """requests.post を差し替え、ネットワーク無しで経路全体を通す。"""
+    import json
+
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+
+    captured: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {"is_urgent": {"answer": 1, "confidence": 0.9}}
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["payload"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(common, "requests", type("R", (), {"post": staticmethod(fake_post)}))
+
+    questions = {"is_urgent": {"type": "noul", "instructions": "urgent?"}}
+    answers = common.evaluate("test", questions)
+    # 公式のエンドポイントを叩く
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["headers"]["Authorization"] == "Bearer dummy"
+    assert captured["payload"]["model"] == "gpt-6-luna"
+    assert captured["payload"]["text"]["format"]["strict"] is True
+    assert answers["is_urgent"]["noul"] == 1.0
+
+
+def test_openai_missing_key_raises(monkeypatch) -> None:
+    """鍵が無ければ JevError。他の例外は投げない。"""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(common.JevError):
+        common._call_openai("test", {"x": {"type": "noul"}}, "gpt-6-luna", 1.0)
 
 
 def test_noul_becomes_boolean_for_vercel() -> None:
