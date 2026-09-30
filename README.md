@@ -73,6 +73,7 @@ Jev の呼び出し経路は 3 つ。上から順に優先される。
 | **TypeSafe 直 API** | `TYPESAFE_API_KEY` | Cloudflare / Vercel を挟まない |
 | **Vercel AI Gateway** | `AI_GATEWAY_API_KEY` | クレジット制（月の無料枠あり。カード登録が前提） |
 | Cloudflare Workers AI | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | Third-party モデルのため無料枠外。402 で止まる |
+| OpenAI（比較用） | `OPENAI_API_KEY` | Jev ではない。最後に判定（`OPENAI_MODEL`、既定 `gpt-6-luna`） |
 
 **Vercel が実用的な選択肢。** キーは AI Gateway の API Keys ページで発行する。
 Jev は無料枠モデルの一覧に含まれている。
@@ -192,6 +193,7 @@ examples/
   task7_apple_fm_structured.py  Jev の型を構造化出力に写像する
   task8_fm_criteria.py          criteria と、確率か判断かの違い
   task9_fm_independence.py      判断が独立しているかを確かめる
+  task10_openai_backend.py      同じ判断を OpenAI 経路にやらせる（比較用）
 tests/
   test_tasks_offline.py  ネットワーク不要のロジック検証
 docs/
@@ -202,6 +204,7 @@ docs/
   05-verification.md
   06-llm-baseline.md
   07-apple-fm.md
+  08-openai-backend.md
 ```
 
 ## 確認

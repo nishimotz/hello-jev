@@ -1,12 +1,13 @@
 """Jev (TypeSafe System One Model) を呼ぶ薄いクライアント。
 
-経路は 3 つ。上から順に優先する。
+経路は 4 つ。上から順に優先する。
 
 1. `TYPESAFE_API_KEY`    TypeSafe 直 API。Cloudflare / Vercel を挟まない
 2. `AI_GATEWAY_API_KEY`  Vercel AI Gateway の `typesafe-ai/jev`
-3. それ以外               Cloudflare Workers AI の `typesafe/jev`
+3. `CLOUDFLARE_*`        Cloudflare Workers AI の `typesafe/jev`
+4. `OPENAI_API_KEY`      OpenAI Responses API（汎用 LLM。Jev ではない）
 
-Vercel と Cloudflare は `noul` / `confidence` の位置が異なるので、
+Vercel / Cloudflare / OpenAI は `noul` / `confidence` の位置が異なるので、
 このモジュールで同じ形に正規化してから返す。
 
 環境変数:
@@ -14,6 +15,11 @@ Vercel と Cloudflare は `noul` / `confidence` の位置が異なるので、
     AI_GATEWAY_API_KEY        Vercel AI Gateway 経由（クレジットが必要）
     CLOUDFLARE_ACCOUNT_ID     Cloudflare 経由のとき必要
     CLOUDFLARE_API_TOKEN      Cloudflare 経由のとき必要
+    OPENAI_API_KEY            OpenAI 経由のとき必要（最後の経路）
+    OPENAI_MODEL              OpenAI のモデル名（既定 gpt-6-luna）
+
+経路の優先順は、Jev 本命（TypeSafe / Vercel / Cloudflare）を OpenAI より
+先に置く。OPENAI_API_KEY は最後に判定するので、両方設定しても Jev が勝つ。
 """
 
 from __future__ import annotations
@@ -45,11 +51,24 @@ _VC_SPEC_VERSION = "4"
 _TS_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 _TS_MODEL = "jev-latest"
 
+# OpenAI Responses API（汎用 LLM。Jev ではない）
+# 出典: https://developers.openai.com/api/reference/resources/responses/methods/create
+# 構造化出力は text.format（type=json_schema, strict=true）。
+# 出力は output[].content[].text に JSON 文字列で入る。
+_OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
+_OPENAI_MODEL = "gpt-6-luna"
+# 構造化出力の format 名。任意の識別子でよい。
+_OPENAI_FORMAT_NAME = "jev_answers"
+# reasoning を切って出力を決定的にする（gpt-6-luna は none を受理する）。
+_OPENAI_REASONING_EFFORT = "none"
+
 # 環境変数名は分割して組み立てる（値そのものは扱わない）
 _ENV_CF_ACCOUNT_ID = "CLOUDFLARE_" + "ACCOUNT_ID"
 _ENV_CF_API_TOKEN = "CLOUDFLARE_" + "API_TOKEN"
 _ENV_TS_API_KEY = "TYPESAFE_" + "API_KEY"
 _ENV_VC_API_KEY = "AI_GATEWAY_" + "API_KEY"
+_ENV_OPENAI_API_KEY = "OPENAI_" + "API_KEY"
+_ENV_OPENAI_MODEL = "OPENAI_" + "MODEL"
 
 
 class JevError(RuntimeError):
@@ -89,20 +108,225 @@ def evaluate(
         return _call_typesafe(state, questions, model or _TS_MODEL, timeout)
     if backend == "vercel":
         return _call_vercel(state, questions, model or _VC_MODEL, timeout)
+    if backend == "openai":
+        return _call_openai(state, questions, model or _openai_model(), timeout)
     return _call_cloudflare(state, questions, model or _CF_MODEL, timeout)
 
 
 def _select_backend() -> str:
     """どの経路で呼ぶかを決める。
 
-    優先順は TYPESAFE_API_KEY、AI_GATEWAY_API_KEY、Cloudflare の順。
-    Cloudflare は環境変数の有無にかかわらず既定として選ばれる。
+    優先順は TYPESAFE_API_KEY、AI_GATEWAY_API_KEY、CLOUDFLARE_*、
+    OPENAI_API_KEY の順。OPENAI_API_KEY は最後なので、Jev 本命の
+    キーが設定されていれば OpenAI より Jev が選ばれる。
     """
     if os.environ.get(_ENV_TS_API_KEY, "").strip():
         return "typesafe"
     if os.environ.get(_ENV_VC_API_KEY, "").strip():
         return "vercel"
+    if (
+        os.environ.get(_ENV_CF_ACCOUNT_ID, "").strip()
+        and os.environ.get(_ENV_CF_API_TOKEN, "").strip()
+    ):
+        return "cloudflare"
+    if os.environ.get(_ENV_OPENAI_API_KEY, "").strip():
+        return "openai"
     return "cloudflare"
+
+
+def _openai_model() -> str:
+    """OpenAI のモデル名を決める。OPENAI_MODEL で差し替えられる。"""
+    return os.environ.get(_ENV_OPENAI_MODEL, "").strip() or _OPENAI_MODEL
+
+
+def _call_openai(
+    state: Any, questions: dict[str, dict[str, Any]], model: str, timeout: float
+) -> dict[str, Any]:
+    """OpenAI Responses API を叩く。
+
+    Jev ではない汎用 LLM 経路。同じ state と同じ問いを渡し、answers を
+    他の経路と同じ形に正規化して返す。
+
+    エンドポイント・payload・応答形式は OpenAI 公式ドキュメントに合わせる。
+    - POST https://api.openai.com/v1/responses
+    - 入力は `input`（文字列または message の配列）
+    - 構造化出力は `text.format`（type=json_schema, strict=true）
+    - 出力は `output[].content[].text` に JSON 文字列で入る
+    """
+    api_key = os.environ.get(_ENV_OPENAI_API_KEY, "").strip()
+    if not api_key:
+        raise JevError(f"{_ENV_OPENAI_API_KEY} が設定されていない")
+
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "developer", "content": _OPENAI_INSTRUCTIONS},
+            {"role": "user", "content": _openai_input(state, questions)},
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": _OPENAI_FORMAT_NAME,
+                "strict": True,
+                "schema": _openai_schema(questions),
+            }
+        },
+        "reasoning": {"effort": _OPENAI_REASONING_EFFORT},
+    }
+    response = _post(
+        _OPENAI_ENDPOINT,
+        {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        payload,
+        timeout,
+    )
+    if response.status_code != 200:
+        raise JevError(_format_http_error(response, _OPENAI_ERROR_HINTS))
+    return _parse_openai_answers(response, questions)
+
+
+# 構造化出力でモデルに守らせる指示。
+# 確率の意味は Jev と似せるが、較正されていない点は task10 / docs で述べる。
+_OPENAI_INSTRUCTIONS = (
+    "You are answering typed judgment questions about a message. "
+    "Return only the JSON object that matches the given schema."
+)
+
+
+def _openai_input(state: Any, questions: dict[str, dict[str, Any]]) -> str:
+    """state と questions を 1 つの入力文にする。
+
+    汎用 LLM は Jev のように state と questions を別々に受け取れないので、
+    質問を本文に開き、state を最後に置く（questions.py と同じ考え方）。
+    """
+    lines = ["Answer the following questions about the message.", ""]
+    for qid, question in questions.items():
+        lines.append(f"- {qid}: {question.get('instructions', '')}")
+        criteria = question.get("criteria")
+        if isinstance(criteria, dict):
+            for key, value in criteria.items():
+                lines.append(f"    {key}: {value}")
+        elif isinstance(criteria, list):
+            for index, value in enumerate(criteria):
+                lines.append(f"    {index}: {value}")
+    lines.extend(["", f"Message: {state}"])
+    return "\n".join(lines)
+
+
+def _openai_schema(questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """構造化出力用の JSON schema を組み立てる。
+
+    問い名ごとに答えと confidence（0〜1）を持たせる。
+    choice は取り得る値を enum で縛る。score は 0〜最大レベルに縛る。
+    """
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for qid, question in questions.items():
+        qtype = question.get("type")
+        answer: dict[str, Any]
+        if qtype == "noul":
+            answer = {"type": "number"}
+        elif qtype == "choice":
+            criteria = question.get("criteria") or {}
+            values = list(criteria) if isinstance(criteria, dict) else []
+            answer = {"type": "string"}
+            if values:
+                answer["enum"] = values
+        elif qtype == "score":
+            criteria = question.get("criteria") or []
+            max_level = max(len(criteria) - 1, 0)
+            answer = {"type": "number", "minimum": 0, "maximum": max_level}
+        else:
+            # 未知の型は黙って通さない
+            raise JevError(f"未知の質問型: {qtype!r}（{qid}）")
+        answer["description"] = question.get("instructions", "")
+        properties[qid] = {
+            "type": "object",
+            "properties": {
+                "answer": answer,
+                "confidence": {"type": "number"},
+            },
+            "required": ["answer", "confidence"],
+            "additionalProperties": False,
+        }
+        required.append(qid)
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _parse_openai_answers(
+    response: Response, questions: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """OpenAI のレスポンスを読み、他の経路と同じ形に正規化する。
+
+    Responses API の出力は output[].content[].text に JSON 文字列で入る。
+    中身は {問い名: {answer, confidence}} なので、Jev の
+    {問い名: {type, noul/score/choice, confidence}} に写す。
+    """
+    try:
+        body = response.json()
+    except ValueError as e:
+        raise JevError(f"レスポンスが JSON でない: {e}") from e
+
+    if body.get("error"):
+        raise JevError(f"OpenAI がエラーを返した: {body['error']}")
+
+    text = _openai_output_text(body)
+    if not text:
+        raise JevError(
+            "Responses API の出力本文が空だった（output[].content[].text）"
+        )
+    import json as _json
+
+    try:
+        parsed = _json.loads(text)
+    except ValueError as e:
+        raise JevError(f"出力が JSON でない: {text[:100]!r}") from e
+    if not isinstance(parsed, dict):
+        raise JevError(f"出力が object でない: {text[:100]!r}")
+
+    normalized: dict[str, Any] = {}
+    for qid, question in questions.items():
+        item = parsed.get(qid)
+        if not isinstance(item, dict):
+            raise JevError(f"{qid} が出力に無い: {list(parsed)}")
+        qtype = question.get("type")
+        answer = item.get("answer")
+        out: dict[str, Any] = {"type": qtype}
+        if qtype == "noul":
+            out["noul"] = _as_float(answer)
+        elif qtype == "score":
+            out["score"] = _as_float(answer)
+        elif qtype == "choice":
+            out["choice"] = answer
+        if item.get("confidence") is not None:
+            out["confidence"] = _as_float(item["confidence"])
+        normalized[qid] = out
+    return normalized
+
+
+def _openai_output_text(body: dict[str, Any]) -> str:
+    """Responses API の output から output_text を集める。"""
+    chunks: list[str] = []
+    for item in body.get("output") or []:
+        if item.get("type") != "message":
+            continue
+        for part in item.get("content") or []:
+            if part.get("type") == "output_text" and isinstance(
+                part.get("text"), str
+            ):
+                chunks.append(part["text"])
+    return "".join(chunks)
+
+
+def _as_float(value: Any) -> float:
+    """数値を float に矯正する。数値でなければエラーにする。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise JevError(f"数値でない値: {value!r}")
+    return float(value)
 
 
 def _call_vercel(
@@ -296,6 +520,18 @@ _CF_ERROR_HINTS = {
         "Third-party モデルを呼べる課金設定かを確認する。"
     ),
     429: "レート制限。少し待ってから再試行する。",
+}
+
+_OPENAI_ERROR_HINTS = {
+    401: (
+        "認証に失敗した。OPENAI_API_KEY が正しいか、失効していないかを確認する。"
+    ),
+    403: "このモデルまたは機能への権限がない。OPENAI_MODEL を確認する。",
+    404: "モデル名またはエンドポイントが無い。OPENAI_MODEL の値を確認する。",
+    429: (
+        "レート制限または残高不足。少し待って再試行するか、"
+        "OpenAI の使用量・残高を確認する。"
+    ),
 }
 
 _TS_ERROR_HINTS = {
